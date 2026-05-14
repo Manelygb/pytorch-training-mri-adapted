@@ -18,3 +18,5 @@ checkpoint*/
 *.tar.gz
 *.zip
 .ipynb_checkpoints/
+
+scripts/
