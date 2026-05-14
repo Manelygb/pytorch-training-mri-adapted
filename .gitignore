@@ -7,3 +7,14 @@ checkpoints/
 venv/
 .idea/
 wandb/
+
+data/
+data_raw/
+dataset_split/
+new_data/
+
+checkpoint*/
+
+*.tar.gz
+*.zip
+.ipynb_checkpoints/

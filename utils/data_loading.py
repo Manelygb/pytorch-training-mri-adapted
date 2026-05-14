@@ -14,7 +14,8 @@ from tqdm import tqdm
 
 
 def load_image(filename):
-    ext = splitext(filename)[1]
+    """Load image supporting various formats including .tif for brain MRI data"""
+    ext = splitext(filename)[1].lower()
     if ext == '.npy':
         return Image.fromarray(np.load(filename))
     elif ext in ['.pt', '.pth']:
@@ -23,8 +24,26 @@ def load_image(filename):
         return Image.open(filename)
 
 
+def has_mask(idx, mask_dir, mask_suffix):
+    """Check if a mask exists for a given image ID"""
+    for ext in ['.tif', '.tiff', '.png', '.jpg', '.jpeg', '.npy']:
+        if (mask_dir / f"{idx}{mask_suffix}{ext}").exists():
+            return True
+    return False
+
+
 def unique_mask_values(idx, mask_dir, mask_suffix):
-    mask_file = list(mask_dir.glob(idx + mask_suffix + '.*'))[0]
+    """Find unique values in mask for class mapping"""
+    mask_file = None
+    for ext in ['.tif', '.tiff', '.png', '.jpg', '.jpeg', '.npy']:
+        potential_file = list(mask_dir.glob(idx + mask_suffix + ext))
+        if potential_file:
+            mask_file = potential_file[0]
+            break
+
+    if mask_file is None:
+        raise FileNotFoundError(f'No mask file found for ID {idx} with suffix {mask_suffix}')
+
     mask = np.asarray(load_image(mask_file))
     if mask.ndim == 2:
         return np.unique(mask)
@@ -43,9 +62,20 @@ class BasicDataset(Dataset):
         self.scale = scale
         self.mask_suffix = mask_suffix
 
-        self.ids = [splitext(file)[0] for file in listdir(images_dir) if isfile(join(images_dir, file)) and not file.startswith('.')]
+        all_ids = [
+            splitext(file)[0]
+            for file in listdir(images_dir)
+            if isfile(join(images_dir, file)) and not file.startswith('.') and '_mask' not in file
+        ]
+
+        # Keep only images that have corresponding masks
+        self.ids = [idx for idx in all_ids if has_mask(idx, self.mask_dir, self.mask_suffix)]
+        missing = len(all_ids) - len(self.ids)
+        if missing > 0:
+            logging.warning(f"Skipped {missing} images without corresponding masks")
+
         if not self.ids:
-            raise RuntimeError(f'No input file found in {images_dir}, make sure you put your images there')
+            raise RuntimeError(f'No input files with masks found in {images_dir}')
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
@@ -76,27 +106,42 @@ class BasicDataset(Dataset):
                     mask[img == v] = i
                 else:
                     mask[(img == v).all(-1)] = i
-
             return mask
-
         else:
             if img.ndim == 2:
                 img = img[np.newaxis, ...]
             else:
                 img = img.transpose((2, 0, 1))
-
             if (img > 1).any():
                 img = img / 255.0
-
             return img
+
+        if mask.max() > 1:   # NEW
+            mask = mask // 255   # convert 255 → 1
+        return mask
 
     def __getitem__(self, idx):
         name = self.ids[idx]
-        mask_file = list(self.mask_dir.glob(name + self.mask_suffix + '.*'))
-        img_file = list(self.images_dir.glob(name + '.*'))
 
-        assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
-        assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
+        mask_file = None
+        for ext in ['.tif', '.tiff', '.png', '.jpg', '.jpeg', '.npy']:
+            potential_mask = list(self.mask_dir.glob(name + self.mask_suffix + ext))
+            if potential_mask:
+                mask_file = potential_mask
+                break
+
+        img_file = None
+        for ext in ['.tif', '.tiff', '.png', '.jpg', '.jpeg', '.npy']:
+            potential_img = list(self.images_dir.glob(name + ext))
+            if potential_img:
+                img_file = potential_img
+                break
+
+        assert img_file is not None and len(img_file) == 1, \
+            f'Either no image or multiple images found for the ID {name}: {img_file}'
+        assert mask_file is not None and len(mask_file) == 1, \
+            f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
+
         mask = load_image(mask_file[0])
         img = load_image(img_file[0])
 
@@ -115,3 +160,15 @@ class BasicDataset(Dataset):
 class CarvanaDataset(BasicDataset):
     def __init__(self, images_dir, mask_dir, scale=1):
         super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+
+
+class BrainMRIDataset(BasicDataset):
+    """
+    Brain MRI segmentation dataset:
+    - grayscale images
+    - supports .tif / .npy
+    - explicit mask suffix
+    """
+    def __init__(self, images_dir, mask_dir, scale=0.5, mask_suffix='_mask'):
+        super().__init__(images_dir, mask_dir, scale, mask_suffix)
+        logging.info("Using BrainMRIDataset (MRI-specific assumptions)")
